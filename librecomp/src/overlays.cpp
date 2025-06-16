@@ -44,6 +44,20 @@ static std::unordered_map<uint32_t, recomp_func_t*> manual_patch_symbols_by_vram
 
 extern "C" {
 int32_t* section_addresses = nullptr;
+uint32_t* section_sizes = nullptr;
+
+#define TLB_ENTRY_COUNT 32
+
+typedef struct TLBEntry TLBEntry;
+struct TLBEntry {
+    uint8_t valid;
+    uint64_t kuseg_start_addr;
+    uint64_t kuseg_end_addr;
+    uint64_t kseg0_start_addr;
+    uint64_t kseg0_end_addr;
+};
+
+TLBEntry tlb_entries[TLB_ENTRY_COUNT];
 }
 
 void recomp::overlays::register_overlays(const overlay_section_table_data_t& sections, const overlays_by_index_t& overlays) {
@@ -160,6 +174,11 @@ void load_overlay(size_t section_table_index, int32_t ram) {
 
     loaded_sections.emplace_back(ram, section_table_index);
     section_addresses[section.index] = ram;
+    section_sizes[section.index] = section.size;
+}
+
+void map_tlb_overlay(size_t section_table_index, int32_t kuseg_addr, uint32_t tlb_index) {
+    // ...
 }
 
 static void load_special_overlay(const SectionTableEntry& section, int32_t ram) {
@@ -271,9 +290,62 @@ extern "C" void unload_overlays(int32_t ram_addr, uint32_t size) {
     }
 }
 
+extern "C" void map_tlb_overlays(uint32_t tlb_index, int32_t even_phys_addr, int32_t odd_phys_addr, int32_t kuseg_addr, uint32_t page_size) {
+    int32_t even_kseg0_addr = even_phys_addr | 0x80000000;
+    int32_t odd_kseg0_addr = odd_phys_addr | 0x80000000; // TODO: Ignoring the odd page address for now...
+
+    // Account for both the even and odd pages.
+    page_size *= 2;
+
+    for (const auto& loaded_section : loaded_sections) {
+        const SectionTableEntry& section = sections_info.code_sections[loaded_section.section_table_index];
+        int32_t offset_into_section = even_kseg0_addr - loaded_section.loaded_ram_addr;
+        int32_t loaded_ram_end_addr = loaded_section.loaded_ram_addr + section_sizes[loaded_section.section_table_index];
+        int32_t kseg0_end_addr = even_kseg0_addr + (page_size - 1);
+
+        // Align the end of the loaded region to the next page boundary.
+        loaded_ram_end_addr = (loaded_ram_end_addr + (page_size - 1)) & ~(page_size - 1);
+
+        // Check if the section falls within the TLB entry range.
+        if (even_kseg0_addr >= loaded_section.loaded_ram_addr && even_kseg0_addr <= loaded_ram_end_addr) {
+            for (size_t function_index = 0; function_index < section.num_funcs; function_index++) {
+                const FuncEntry& func = section.funcs[function_index];
+                int32_t func_kseg0_addr = loaded_section.loaded_ram_addr + func.offset;
+
+                // Check if the function falls within the TLB entry range.
+                if (func_kseg0_addr >= even_kseg0_addr && func_kseg0_addr <= kseg0_end_addr) {
+                    func_map[kuseg_addr + func.offset - offset_into_section] = func.func;
+                }
+            }
+
+            // Update the TLB entry to include the section.
+            tlb_entries[tlb_index].valid = 1;
+            tlb_entries[tlb_index].kuseg_start_addr = kuseg_addr;
+            tlb_entries[tlb_index].kuseg_end_addr = kuseg_addr + (page_size - 1);
+            tlb_entries[tlb_index].kseg0_start_addr = loaded_section.loaded_ram_addr;
+            tlb_entries[tlb_index].kseg0_end_addr = loaded_ram_end_addr;
+        }
+    }
+}
+
+extern "C" void unmap_tlb_overlays(uint32_t tlb_index) {
+    // Invalidate the TLB entry.
+    tlb_entries[tlb_index].valid = 0;
+
+    // Clear the function map of any functions that were within the range of the TLB entry.
+    for (auto it = func_map.begin(); it != func_map.end();) {
+        if (it->first >= (int32_t)tlb_entries[tlb_index].kuseg_start_addr && it->first <= (int32_t)tlb_entries[tlb_index].kuseg_end_addr) {
+            it = func_map.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void recomp::overlays::init_overlays() {
     func_map.clear();
     section_addresses = (int32_t *)calloc(sections_info.total_num_sections, sizeof(int32_t));
+    section_sizes = (uint32_t *)calloc(sections_info.total_num_sections, sizeof(uint32_t));
 
     // Sort the executable sections by rom address
     std::sort(&sections_info.code_sections[0], &sections_info.code_sections[sections_info.num_code_sections],

@@ -9,8 +9,8 @@
 extern "C" void osAiSetFrequency_recomp(uint8_t* rdram, recomp_context* ctx) {
     uint32_t freq = ctx->r4;
     // This makes actual audio frequency more accurate to console, but may not be desirable
-    //uint32_t dacRate = (uint32_t)(((float)VI_NTSC_CLOCK / freq) + 0.5f);
-    //freq = VI_NTSC_CLOCK / dacRate;
+    uint32_t dacRate = (uint32_t)(((float)VI_NTSC_CLOCK / freq) + 0.5f);
+    freq = VI_NTSC_CLOCK / dacRate;
     ctx->r2 = freq;
     ultramodern::set_audio_frequency(freq);
 }

@@ -185,7 +185,7 @@ bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& d
 bool check_stored_rom(const recomp::GameEntry& game_entry) {
     std::vector stored_rom_data = read_file(config_path / game_entry.stored_filename());
 
-    if (!check_hash(stored_rom_data, game_entry.rom_hash)) {
+    if (!check_hash(stored_rom_data, game_entry.decompressed_rom_hash)) {
         // Incorrect hash, remove the stored ROM file if it exists.
         std::filesystem::remove(config_path / game_entry.stored_filename());
         return false;
@@ -217,7 +217,7 @@ bool recomp::load_stored_rom(std::u8string& game_id) {
     
     std::vector<uint8_t> stored_rom_data = read_file(config_path / find_it->second.stored_filename());
 
-    if (!check_hash(stored_rom_data, find_it->second.rom_hash)) {
+    if (!check_hash(stored_rom_data, find_it->second.decompressed_rom_hash)) {
         // The ROM no longer has the right hash, delete it.
         std::filesystem::remove(config_path / find_it->second.stored_filename());
         return false;
@@ -345,6 +345,138 @@ void byteswap_data(std::vector<uint8_t>& rom_data, size_t index_xor) {
     }
 }
 
+#define COMMAND_SLIDING_WINDOW_COPY_END 0x7F
+#define COMMAND_SLIDING_WINDOW_COPY_LENGTH_MASK 0x7C
+#define COMMAND_SLIDING_WINDOW_COPY_OFFSET_FIRST_BYTE_MASK 0x03
+#define COMMAND_SLIDING_WINDOW_COPY_OFFSET_MAX_MASK 0x3FF
+
+#define COMMAND_RAW_COPY_END 0x9F
+#define COMMAND_RAW_COPY_LENGTH_MASK 0x1F
+
+#define COMMAND_RLE_WRITE_SHORT_ANY_VALUE_END 0xDF
+#define COMMAND_RLE_WRITE_SHORT_ANY_VALUE_LENGTH_MASK 0x1F
+
+#define COMMAND_RLE_WRITE_SHORT_ZERO_END 0xFE
+#define COMMAND_RLE_WRITE_SHORT_ZERO_LENGTH_MASK 0x1F
+
+#define COMMAND_RLE_WRITE_LONG_ZERO 0xFF
+#define COMMAND_RLE_WRITE_LONG_ZERO_LENGTH_MASK 0xFF
+
+#define SWAP16(x) ((uint16_t)(x) << 8 | (uint16_t)(x) >> 8)
+
+#define SWAP32(x) ((uint32_t)(x) >> 24 | ((uint32_t)(x) & 0x00FF0000) >> 8 | \
+                  ((uint32_t)(x) & 0x0000FF00) << 8 | (uint32_t)(x) << 24)
+
+#define SWAP64(x) ((uint64_t)(x) << 56 | ((uint64_t)(x) & 0xFF00ULL) << 40 | \
+                  ((uint64_t)(x) & 0xFF0000ULL) << 24 | ((uint64_t)(x) & 0xFF000000ULL) << 8 | \
+                  ((uint64_t)(x) >> 8 & 0xFF000000ULL) | ((uint64_t)(x) >> 24 & 0xFF0000ULL) | \
+                  ((uint64_t)(x) >> 40 & 0xFF00ULL) | ((uint64_t)(x) >> 56 & 0xFFULL))
+
+size_t decompress_file(const uint8_t *input_buffer, uint8_t *output_buffer, size_t input_size) {
+    size_t input_offset = 4;
+    size_t output_offset = 0;
+
+    uint32_t compressed_size = SWAP32(*(uint32_t *)input_buffer);
+    if (compressed_size > input_size) {
+        return 0;
+    }
+    
+    while (input_offset < compressed_size) {
+        uint8_t command = input_buffer[input_offset++];
+
+        if (command <= COMMAND_SLIDING_WINDOW_COPY_END) {
+            uint8_t length = (command & COMMAND_SLIDING_WINDOW_COPY_LENGTH_MASK) >> 2;
+            u16 offset_first_byte = (command & COMMAND_SLIDING_WINDOW_COPY_OFFSET_FIRST_BYTE_MASK) << 8;
+            uint8_t offset_second_byte = input_buffer[input_offset++];
+            u16 offset = (offset_first_byte | offset_second_byte) & COMMAND_SLIDING_WINDOW_COPY_OFFSET_MAX_MASK;
+
+            // Add 2 to get the actual length since 2 is the minimum length.
+            length += 2;
+            
+            for (size_t i = 0; i < length; i++) {
+                output_buffer[output_offset] = output_buffer[output_offset - offset];
+                output_offset++;
+            }
+        } else if (command <= COMMAND_RAW_COPY_END) {
+            uint8_t length = command & COMMAND_RAW_COPY_LENGTH_MASK;
+            
+            for (size_t i = 0; i < length; i++) {
+                output_buffer[output_offset++] = input_buffer[input_offset++];
+            }
+        } else if (command <= COMMAND_RLE_WRITE_SHORT_ANY_VALUE_END) {
+            uint8_t length = command & COMMAND_RLE_WRITE_SHORT_ANY_VALUE_LENGTH_MASK;
+            uint8_t value = input_buffer[input_offset++];
+ 
+            // Add 2 to get the actual length since 2 is the minimum length.
+            length += 2;
+
+            for (size_t i = 0; i < length; i++) {
+                output_buffer[output_offset++] = value;
+            }
+        } else if (command <= COMMAND_RLE_WRITE_SHORT_ZERO_END) {
+            uint8_t length = command & COMMAND_RLE_WRITE_SHORT_ZERO_LENGTH_MASK;
+
+            // Add 2 to get the actual length since 2 is the minimum length.
+            length += 2;
+
+            for (size_t i = 0; i < length; i++) {
+                output_buffer[output_offset++] = 0;
+            }
+        } else if (command == COMMAND_RLE_WRITE_LONG_ZERO) {
+            u16 length = input_buffer[input_offset++] & COMMAND_RLE_WRITE_LONG_ZERO_LENGTH_MASK;
+
+            // Add 2 to get the actual length since 2 is the minimum length.
+            length += 2;
+
+            for (size_t i = 0; i < length; i++) {
+                output_buffer[output_offset++] = 0;
+            }
+        } else {
+            // Invalid command.
+        }
+    }
+
+    // Return the output offset as the output size.
+    return output_offset;
+}
+
+size_t decompress_rom(const uint8_t *input_rom_buffer, uint8_t *output_rom_buffer, size_t file_table_offset) {
+    uint32_t *input_file_table_entry = (u32 *)(input_rom_buffer + file_table_offset);
+    uint32_t *output_file_table_entry = (u32 *)(output_rom_buffer + file_table_offset);
+    uint32_t rom_offset = SWAP32(input_file_table_entry[0]) & 0x7FFFFFFF;
+
+    while (input_file_table_entry[0] != 0 && input_file_table_entry[1] != 0) {
+        uint8_t file_is_compressed = (SWAP32(input_file_table_entry[0]) & 0x80000000) >> 31;
+        uint32_t file_offset = SWAP32(input_file_table_entry[0]) & 0x7FFFFFFF;
+        uint32_t file_size = (SWAP32(input_file_table_entry[1]) & 0x7FFFFFFF) - file_offset;
+
+        if (file_is_compressed) {
+            uint8_t *compressed_file = (uint8_t *)(input_rom_buffer + file_offset);
+            uint8_t *decompressed_file = (uint8_t *)(output_rom_buffer + rom_offset);
+
+            file_size = decompress_file(compressed_file, decompressed_file, file_size);
+        } else {
+            memcpy(output_rom_buffer + rom_offset, input_rom_buffer + file_offset, file_size);
+        }
+
+        // Update the table entries for the current and the next file.
+        output_file_table_entry[0] = SWAP32(rom_offset);
+        output_file_table_entry[1] = SWAP32(rom_offset + (file_size + 0xF) & ~0xF);
+
+        rom_offset += (file_size + 0xF) & ~0xF;
+
+        input_file_table_entry++;
+        output_file_table_entry++;
+    }
+
+    return rom_offset;
+}
+
+#define MAXIMUM_ROM_SIZE 0x4000000
+#define FILE_TABLE_OFFSET 0x57FD8
+#define DECOMPRESSED_ROM_CRC_1 0x9CC11F4B
+#define DECOMPRESSED_ROM_CRC_2 0xABAA8538
+
 recomp::RomValidationError recomp::select_rom(const std::filesystem::path& rom_path, std::u8string& game_id) {
     auto find_it = game_roms.find(game_id);
 
@@ -392,8 +524,32 @@ recomp::RomValidationError recomp::select_rom(const std::filesystem::path& rom_p
             }
         }
     }
+    
+    std::vector<uint8_t> decompressed_rom_data(MAXIMUM_ROM_SIZE);
+    memcpy(decompressed_rom_data.data(), rom_data.data(), rom_data.size());
 
-    write_file(config_path / game_entry.stored_filename(), rom_data);
+    size_t final_size = decompress_rom(rom_data.data(), decompressed_rom_data.data(), FILE_TABLE_OFFSET);
+    
+    // Align file_size to the nearest power of two. (https://graphics.stanford.edu/%7Eseander/bithacks.html#RoundUpPowerOf2)
+    final_size--;
+    final_size |= final_size >> 1;
+    final_size |= final_size >> 2;
+    final_size |= final_size >> 4;
+    final_size |= final_size >> 8;
+    final_size |= final_size >> 16;
+    final_size++;
+
+    decompressed_rom_data.resize(final_size);
+
+    // Write the CRC values to the header of the decompressed ROM.
+    *(uint32_t *)(decompressed_rom_data.data() + 0x10) = SWAP32(DECOMPRESSED_ROM_CRC_1);
+    *(uint32_t *)(decompressed_rom_data.data() + 0x14) = SWAP32(DECOMPRESSED_ROM_CRC_2);
+
+    if (!check_hash(decompressed_rom_data, game_entry.decompressed_rom_hash)) {
+        return recomp::RomValidationError::OtherError;
+    }
+
+    write_file(config_path / game_entry.stored_filename(), decompressed_rom_data);
     
     return recomp::RomValidationError::Good;
 }

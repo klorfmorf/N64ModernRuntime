@@ -8,6 +8,8 @@
 #include <span>
 #include "sections.h"
 
+typedef void (recomp_func_ext_t)(uint8_t* rdram, recomp_context* ctx, uintptr_t arg);
+
 namespace recomp {
     namespace overlays {
         struct overlay_section_table_data_t {

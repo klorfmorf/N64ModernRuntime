@@ -20,7 +20,6 @@ namespace recomp {
 
     struct GameEntry {
         uint64_t rom_hash;
-        uint64_t decompressed_rom_hash;
         std::string internal_name;
         std::u8string game_id;
         std::string mod_game_id;

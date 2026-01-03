@@ -8,8 +8,6 @@
 #include <span>
 #include "sections.h"
 
-typedef void (recomp_func_ext_t)(uint8_t* rdram, recomp_context* ctx, uintptr_t arg);
-
 namespace recomp {
     namespace overlays {
         struct overlay_section_table_data_t {
@@ -65,7 +63,5 @@ namespace recomp {
 
 extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size);
 extern "C" void unload_overlays(int32_t ram_addr, uint32_t size);
-extern "C" void map_tlb_overlays(uint32_t tlb_index, int32_t even_phys_addr, int32_t odd_phys_addr, int32_t kuseg_addr, uint32_t page_size);
-extern "C" void unmap_tlb_overlays(uint32_t tlb_index);
 
 #endif

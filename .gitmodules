@@ -4,9 +4,9 @@
 [submodule "thirdparty/miniz"]
 	path = thirdparty/miniz
 	url = https://github.com/richgel999/miniz
-[submodule "N64Recomp"]
-	path = N64Recomp
-	url = https://github.com/N64Recomp/N64Recomp
 [submodule "thirdparty/o1heap"]
 	path = thirdparty/o1heap
 	url = https://github.com/N64Recomp/o1heap
+[submodule "N64Recomp"]
+	path = N64Recomp
+	url = https://github.com/klorfmorf/N64Recomp.git

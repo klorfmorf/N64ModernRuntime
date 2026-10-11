@@ -135,19 +135,19 @@ extern "C" void __osSetFpcCsr_recomp(uint8_t * rdram, recomp_context * ctx) {
 }
 
 extern "C" void osMapTLB_recomp(uint8_t * rdram, recomp_context * ctx) {
-    // TODO this will need to be implemented in the future for any games that actually use the TLB
+    osMapTLB(rdram, (s32)ctx->r4, (OSPageMask)ctx->r5, (int32_t)ctx->r6, (u32)ctx->r7, (u32)MEM_W(0x10, ctx->r29), (s32)MEM_W(0x14, ctx->r29));
 }
 
 extern "C" void osUnmapTLB_recomp(uint8_t * rdram, recomp_context * ctx) {
-    // TODO this will need to be implemented in the future for any games that actually use the TLB
-}
-
-extern "C" void osSetTLBASID_recomp(uint8_t * rdram, recomp_context * ctx) {
-    // TODO this will need to be implemented in the future for any games that actually use the TLB
+    osUnmapTLB(rdram, (s32)ctx->r4);
 }
 
 extern "C" void osUnmapTLBAll_recomp(uint8_t * rdram, recomp_context * ctx) {
-    // TODO this will need to be implemented in the future for any games that actually use the TLB
+    osUnmapTLBAll(rdram);
+}
+
+extern "C" void osSetTLBASID_recomp(uint8_t * rdram, recomp_context * ctx) {
+    osSetTLBASID(rdram, (s32)ctx->r4);
 }
 
 // For the Mario Party games (not working)

@@ -108,6 +108,7 @@ typedef struct OSThread_t {
 } OSThread;
 
 typedef u32 OSEvent;
+typedef u32 OSPageMask;
 typedef PTR(void) OSMesg;
 
 typedef struct OSMesgQueue {
@@ -313,6 +314,11 @@ s32 osMotorInit(RDRAM_ARG PTR(OSMesgQueue), PTR(OSPfs), int);
 s32 osMotorStop(RDRAM_ARG PTR(OSPfs));
 s32 osMotorStart(RDRAM_ARG PTR(OSPfs));
 s32 __osMotorAccess(RDRAM_ARG PTR(OSPfs), s32);
+
+void osMapTLB(RDRAM_ARG s32 index, OSPageMask pm, PTR(void) vaddr, u32 evenpaddr, u32 oddpaddr, s32 asid);
+void osUnmapTLB(RDRAM_ARG s32 index);
+void osUnmapTLBAll(RDRAM_ARG1);
+void osSetTLBASID(RDRAM_ARG s32 asid);
 
 #ifdef __cplusplus
 } // extern "C"
